@@ -3,30 +3,37 @@ package main
 import (
 	"bytes"
 	"log"
-	"strings"
 
-	"github.com/flynn/u2f/u2fhid"
+	"github.com/islishude/u2f/u2fhid"
 )
 
 func main() {
-	msg := []byte(strings.Repeat("echo", 100))
-	devices, err := u2fhid.Devices()
+	first, err := u2fhid.First()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Get devices error: %s\n", err)
+		return
 	}
-	for _, d := range devices {
-		dev, err := u2fhid.Open(d)
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.Println("opened", d.Path)
-		res, err := dev.Ping([]byte(msg))
-		if err != nil {
-			log.Fatal(err)
-		}
-		if !bytes.Equal(res, msg) {
-			log.Fatalf("expected %x, got %x", msg, res)
-		}
-		log.Println("successfully pinged", d.Path)
+
+	device, err := u2fhid.Open(first)
+	if err != nil {
+		log.Printf("open error: %s\n", err)
+		return
 	}
+	defer device.Close()
+
+	log.Printf("Opened %s at %s\n", first.Product, first.Path)
+
+	msg := []byte("echo")
+	res, err := device.Ping(msg)
+	if err != nil {
+		log.Printf("ping error: %s\n", err)
+		return
+	}
+
+	if !bytes.Equal(res, msg) {
+		log.Printf("expected %x, got %x\n", msg, res)
+		return
+	}
+
+	log.Println("successfully pinged")
 }

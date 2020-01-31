@@ -3,8 +3,10 @@ package u2fhid
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -14,14 +16,16 @@ import (
 )
 
 const (
-	cmdPing  = 0x80 | 0x01
-	cmdMsg   = 0x80 | 0x03
-	cmdLock  = 0x80 | 0x04
-	cmdInit  = 0x80 | 0x06
-	cmdWink  = 0x80 | 0x08
-	cmdSync  = 0x80 | 0x3c
-	cmdError = 0x80 | 0x3f
+	CmdPing  byte = 0x80 | 0x01
+	CmdMsg   byte = 0x80 | 0x03
+	CmdLock  byte = 0x80 | 0x04
+	CmdInit  byte = 0x80 | 0x06
+	CmdWink  byte = 0x80 | 0x08
+	CmdSync  byte = 0x80 | 0x3c
+	CmdError byte = 0x80 | 0x3f
+)
 
+const (
 	broadcastChannel = 0xffffffff
 
 	capabilityWink = 1
@@ -32,8 +36,8 @@ const (
 
 	responseTimeout = 3 * time.Second
 
-	fidoUsagePage = 0xF1D0
-	u2fUsage      = 1
+	usagePageFido = 0xF1D0
+	usageU2F      = 1
 )
 
 var errorCodes = map[uint8]string{
@@ -53,15 +57,26 @@ func Devices() ([]*hid.DeviceInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	res := make([]*hid.DeviceInfo, 0, len(devices))
 	for _, d := range devices {
-		if d.UsagePage == fidoUsagePage && d.Usage == u2fUsage {
+		if d.UsagePage == usagePageFido && d.Usage == usageU2F {
 			res = append(res, d)
 		}
 	}
-
 	return res, nil
+}
+
+func First() (*hid.DeviceInfo, error) {
+	devices, err := hid.Devices()
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range devices {
+		if d.UsagePage == usagePageFido && d.Usage == usageU2F {
+			return d, nil
+		}
+	}
+	return nil, errors.New("Not found")
 }
 
 // Open initializes a communication channel with a U2F HID device.
@@ -111,7 +126,7 @@ type Device struct {
 
 func (d *Device) sendCommand(channel uint32, cmd byte, data []byte) error {
 	if len(data) > maxMessageLen {
-		return fmt.Errorf("u2fhid: message is too long")
+		return errors.New("u2fhid: message is too long")
 	}
 
 	// zero buffer
@@ -150,7 +165,8 @@ func (d *Device) sendCommand(channel uint32, cmd byte, data []byte) error {
 }
 
 func (d *Device) readResponse(channel uint32, cmd byte) ([]byte, error) {
-	timeout := time.After(responseTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), responseTimeout)
+	defer cancel()
 
 	haveFirst := false
 	var buf []byte
@@ -169,7 +185,7 @@ func (d *Device) readResponse(channel uint32, cmd byte) ([]byte, error) {
 				continue
 			}
 
-			if msg[4] == cmdError {
+			if msg[4] == CmdError {
 				errMsg, ok := errorCodes[msg[7]]
 				if !ok {
 					return nil, fmt.Errorf("u2fhid: received unknown error response %d", msg[7])
@@ -202,7 +218,7 @@ func (d *Device) readResponse(channel uint32, cmd byte) ([]byte, error) {
 			if len(buf) >= expected {
 				return buf, nil
 			}
-		case <-timeout:
+		case <-ctx.Done():
 			return nil, fmt.Errorf("u2fhid: error reading response, read timed out")
 		}
 	}
@@ -216,12 +232,12 @@ func (d *Device) init() error {
 		return err
 	}
 
-	if err := d.sendCommand(broadcastChannel, cmdInit, nonce); err != nil {
+	if err := d.sendCommand(broadcastChannel, CmdInit, nonce); err != nil {
 		return err
 	}
 
 	for {
-		res, err := d.readResponse(broadcastChannel, cmdInit)
+		res, err := d.readResponse(broadcastChannel, CmdInit)
 		if err != nil {
 			return err
 		}
@@ -259,20 +275,20 @@ func (d *Device) Command(cmd byte, data []byte) ([]byte, error) {
 
 // Ping sends data to the device that should be echoed back verbatim.
 func (d *Device) Ping(data []byte) ([]byte, error) {
-	return d.Command(cmdPing, data)
+	return d.Command(CmdPing, data)
 }
 
 // Wink performs a vendor-defined action to identify the device, like blinking
 // an LED. It is not implemented correctly or at all on all devices.
 func (d *Device) Wink() error {
-	_, err := d.Command(cmdWink, nil)
+	_, err := d.Command(CmdWink, nil)
 	return err
 }
 
 // Message sends an encapsulated U2F protocol message to the device and returns
 // the response.
 func (d *Device) Message(data []byte) ([]byte, error) {
-	return d.Command(cmdMsg, data)
+	return d.Command(CmdMsg, data)
 }
 
 // Close closes the device and frees associated resources.

@@ -2,98 +2,96 @@ package main
 
 import (
 	"crypto/rand"
-	"io"
 	"log"
 	"time"
 
-	"github.com/flynn/u2f/u2fhid"
-	"github.com/flynn/u2f/u2ftoken"
+	"github.com/islishude/u2f/u2fhid"
+	"github.com/islishude/u2f/u2ftoken"
 )
 
-func main() {
-	devices, err := u2fhid.Devices()
+func register(app []byte) error {
+	first, err := u2fhid.First()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	if len(devices) == 0 {
-		log.Fatal("no U2F tokens found")
-	}
+	log.Printf("manufacturer = %q, product = %q, vid = 0x%04x, pid = 0x%04x\n", first.Manufacturer, first.Product, first.ProductID, first.VendorID)
 
-	d := devices[0]
-	log.Printf("manufacturer = %q, product = %q, vid = 0x%04x, pid = 0x%04x", d.Manufacturer, d.Product, d.ProductID, d.VendorID)
-
-	dev, err := u2fhid.Open(d)
+	dev, err := u2fhid.Open(first)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	t := u2ftoken.NewToken(dev)
+	defer dev.Close()
 
-	version, err := t.Version()
+	token := u2ftoken.NewToken(dev)
+	version, err := token.Version()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	log.Println("version:", version)
 
 	challenge := make([]byte, 32)
-	app := make([]byte, 32)
-	io.ReadFull(rand.Reader, challenge)
-	io.ReadFull(rand.Reader, app)
+	if _, err := rand.Read(challenge); err != nil {
+		return err
+	}
 
 	var res []byte
 	log.Println("registering, provide user presence")
 	for {
-		res, err = t.Register(u2ftoken.RegisterRequest{Challenge: challenge, Application: app})
+		res, err = token.Register(u2ftoken.RegisterRequest{Challenge: challenge, Application: app})
 		if err == u2ftoken.ErrPresenceRequired {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		} else if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		break
 	}
 
-	log.Printf("registered: %x", res)
+	log.Printf("registered: %x\n", res)
 	res = res[66:]
 	khLen := int(res[0])
 	res = res[1:]
 	keyHandle := res[:khLen]
-	log.Printf("key handle: %x", keyHandle)
+	log.Printf("key handle: %x\n", keyHandle)
+	return nil
+}
 
-	dev.Close()
-
-	log.Println("reconnecting to device in 3 seconds...")
-	time.Sleep(3 * time.Second)
-
-	devices, err = u2fhid.Devices()
+func login(app, keyHandle []byte) error {
+	first, err := u2fhid.First()
 	if err != nil {
-		log.Fatal(err)
+		return nil
 	}
-	d = devices[0]
-	dev, err = u2fhid.Open(d)
+	dev, err := u2fhid.Open(first)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	t = u2ftoken.NewToken(dev)
+	defer dev.Close()
 
-	io.ReadFull(rand.Reader, challenge)
+	token := u2ftoken.NewToken(dev)
+	challenge := make([]byte, 32)
+	if _, err := rand.Read(challenge); err != nil {
+		return err
+	}
 	req := u2ftoken.AuthenticateRequest{
 		Challenge:   challenge,
 		Application: app,
 		KeyHandle:   keyHandle,
 	}
-	if err := t.CheckAuthenticate(req); err != nil {
-		log.Fatal(err)
+	if err := token.CheckAuthenticate(req); err != nil {
+		return err
 	}
 
-	io.ReadFull(rand.Reader, challenge)
+	if _, err := rand.Read(challenge); err != nil {
+		return err
+	}
 	log.Println("authenticating, provide user presence")
 	for {
-		res, err := t.Authenticate(req)
+		res, err := token.Authenticate(req)
 		if err == u2ftoken.ErrPresenceRequired {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		} else if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		log.Printf("counter = %d, signature = %x", res.Counter, res.Signature)
 		break
@@ -103,10 +101,15 @@ func main() {
 		log.Println("testing wink in 2s...")
 		time.Sleep(2 * time.Second)
 		if err := dev.Wink(); err != nil {
-			log.Fatal(err)
+			return err
 		}
 		time.Sleep(2 * time.Second)
-	} else {
-		log.Println("no wink capability")
 	}
+	log.Println("no wink capability")
+	return nil
+}
+
+func main() {
+	_ = register(nil)
+	_ = login(nil, nil)
 }
